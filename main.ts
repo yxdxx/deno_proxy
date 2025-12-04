@@ -1,11 +1,10 @@
 /**
- * Deno Proxy Server (v2.1 Image Gen Fix)
- * 支持: Google, Groq, HuggingFace, Pollinations
+ * Deno Proxy Server (v2.3 Image Binary Fix)
+ * Fixes: Binary stream handling for Pollinations & Groq routing
  */
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 
 serve(async (req) => {
-  // 1. CORS
   if (req.method === "OPTIONS") {
     return new Response(null, {
       headers: {
@@ -25,7 +24,6 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: "Missing headers" }), { status: 400 });
     }
 
-    // 2. 路由选择
     let baseUrl = "";
     switch (targetApi) {
       case "groq": baseUrl = "https://api.groq.com"; break;
@@ -35,20 +33,20 @@ serve(async (req) => {
       default: baseUrl = "https://generativelanguage.googleapis.com"; break;
     }
 
+    // 拼接 URL
     const finalUrl = baseUrl + (proxyPath || "") + url.search;
     console.log(`[Proxy] ${targetApi} -> ${finalUrl}`);
 
-    // 3. 构建请求头
+    // 清洗请求头
     const newHeaders = new Headers();
     for (const [k, v] of req.headers.entries()) {
-      if (!['host', 'x-proxy-path', 'x-target-api'].includes(k.toLowerCase())) {
+      if (!['host', 'x-proxy-path', 'x-target-api', 'cf-connecting-ip', 'content-length'].includes(k.toLowerCase())) {
         newHeaders.set(k, v);
       }
     }
-    // 伪装 UA，防止被画图接口拦截
-    newHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    // 伪装 UA 防止画图被拦截
+    newHeaders.set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
 
-    // 4. 发起请求
     const response = await fetch(finalUrl, {
       method: req.method,
       headers: newHeaders,
@@ -56,15 +54,15 @@ serve(async (req) => {
       redirect: "follow"
     });
 
-    // 5. 处理响应
+    // 处理响应头
     const resHeaders = new Headers(response.headers);
     resHeaders.set("Access-Control-Allow-Origin", "*");
 
-    // 针对图片的特殊处理 (确保 Content-Type 透传)
-    if (targetApi === 'pollinations') {
-        // Pollinations 有时返回 JPEG 有时返回 JSON 错误
-    } else {
-        if (!resHeaders.get("Content-Type")) resHeaders.set("Content-Type", "application/json");
+    // 【关键修复】如果是画图，强制确保 Content-Type 正确，否则 Worker 可能无法解析 blob
+    if (targetApi === 'pollinations' && response.ok) {
+        resHeaders.set("Content-Type", "image/jpeg");
+    } else if (!resHeaders.get("Content-Type")) {
+        resHeaders.set("Content-Type", "application/json");
     }
 
     return new Response(response.body, {
@@ -73,7 +71,7 @@ serve(async (req) => {
     });
 
   } catch (e: any) {
-    return new Response(JSON.stringify({ error: e.message }), { 
+    return new Response(JSON.stringify({ error: `Deno Proxy Error: ${e.message}` }), { 
         status: 500, 
         headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" } 
     });
